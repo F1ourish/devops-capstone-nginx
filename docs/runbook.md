@@ -20,10 +20,9 @@ curl -I http://127.0.0.1
 journalctl -u nginx -n 50 --no-pager
 ```
 
-2026-01-28: nginx installed, active(running), curl 200 OK
 
 Failure drills (заготовка)
-Drill 1: nginx остановлен
+### Drill 1: nginx остановлен
 
 reproduce: 
 ```bash
@@ -57,7 +56,7 @@ curl -I http://127.0.0.1
 ```
 HTTP/1.1 200 OK
 
-Drill 2: битый конфиг
+### Drill 2: битый конфиг
 
 reproduce:
 Бэкап файла:
@@ -122,7 +121,7 @@ nginx: configuration file /etc/nginx/nginx.conf test is successful
 
 curl 200 OK
 
-Drill 3: порт 80 занят
+### Drill 3: порт 80 занят
 
 reproduce: 
 ```bash
@@ -160,7 +159,52 @@ curl -I http://127.0.0.1
 ```
 curl 200 OK
 
+### Drill 4: альтернативное решение конфликта портов — apache2 на 8081 (nginx остаётся на 80)
+
+reproduce:
+```bash
+sudo systemctl enable --now apache2
+```
+# ожидаемо: упадёт из-за занятого :80
+
+diagnose:
+Ключевой симптом в логах apache2: Address already in use ... could not bind to ...:80
+Проверяем, кто занял :80:
+```bash
+sudo ss -tlnp | grep -E ':(80)\b'
+```
+
+root cause:
+порт 80 занят nginx, поэтому apache2 не может забиндиться на :80 и не стартует.
+
+fix:
+Меняем порт apache2 на 8081:
+```bash
+sudo cp /etc/apache2/ports.conf /etc/apache2/ports.conf.bak
+sudo vim /etc/apache2/ports.conf
+# Listen 80 -> Listen 8081
+```
+Меняем VirtualHost на 8081:
+```bash
+sudo vim /etc/apache2/sites-enabled/000-default.conf
+# <VirtualHost *:80> -> <VirtualHost *:8081>
+```
+Перезапускаем apache2 и проверяем:
+```bash
+sudo systemctl restart apache2
+systemctl status apache2 --no-pager
+curl -I http://127.0.0.1:8081
+```
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=23808,fd=5),("nginx",pid=23807,fd=5),("nginx",pid=23806,fd=5),("nginx",pid=23805,fd=5),("nginx",pid=23804,fd=5),("nginx",pid=23803,fd=5),("nginx",pid=23802,fd=5),("nginx",pid=23801,fd=5),("nginx",pid=23800,fd=5))
+LISTEN 0      511                *:8081            *:*    users:(("apache2",pid=24242,fd=4),("apache2",pid=24241,fd=4),("apache2",pid=24239,fd=4))                                                                                                                                                
+LISTEN 0      511             [::]:80           [::]:*    users:(("nginx",pid=23808,fd=6),("nginx",pid=23807,fd=6),("nginx",pid=23806,fd=6),("nginx",pid=23805,fd=6),("nginx",pid=23804,fd=6),("nginx",pid=23803,fd=6),("nginx",pid=23802,fd=6),("nginx",pid=23801,fd=6),("nginx",pid=23800,fd=6))
+
+Убеждаемся, что nginx всё ещё на 80:
+```bash
+curl -I http://127.0.0.1
+sudo ss -lntp | grep -E ':(80|8081)\b'
+```
+
 Case notes
 
-YYYY-MM-DD: ...
-
+2026-01-28: nginx installed, active(running), curl 200 OK
