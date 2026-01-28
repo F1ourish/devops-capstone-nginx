@@ -124,11 +124,41 @@ curl 200 OK
 
 Drill 3: порт 80 занят
 
-reproduce: ...
+reproduce: 
+```bash
+sudo apt -y install apache2
+sudo systemctl enable --now apache2
+```
 
-diagnose: ...
+diagnose: 
+```bash
+systemctl status apache2 --no-pager
+journalctl -u apache2 -n 20 --no-pager
+```
+Ключевой симптом в логах: Address already in use ... could not bind to ...:80
 
-fix: ...
+Проверяем, кто слушает 80 
+```bash
+sudo ss -lntp | grep -E ':(80)\b' || echo "No :80 listener"
+```
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=23808,fd=5),("nginx",pid=23807,fd=5),("nginx",pid=23806,fd=5),("nginx",pid=23805,fd=5),("nginx",pid=23804,fd=5),("nginx",pid=23803,fd=5),("nginx",pid=23802,fd=5),("nginx",pid=23801,fd=5),("nginx",pid=23800,fd=5))
+LISTEN 0      511             [::]:80           [::]:*    users:(("nginx",pid=23808,fd=6),("nginx",pid=23807,fd=6),("nginx",pid=23806,fd=6),("nginx",pid=23805,fd=6),("nginx",pid=23804,fd=6),("nginx",pid=23803,fd=6),("nginx",pid=23802,fd=6),("nginx",pid=23801,fd=6),("nginx",pid=23800,fd=6))
+
+root cause:
+порт 80 уже занят nginx (LISTEN на 0.0.0.0:80 и/или [::]:80), поэтому apache2 не может забиндиться и падает с ошибкой Address already in use (98)
+
+fix:
+```bash
+sudo systemctl stop nginx
+sudo systemctl start apache2
+curl -I http://127.0.0.1
+
+sudo systemctl stop apache2
+sudo systemctl disable apache2
+sudo systemctl start nginx
+curl -I http://127.0.0.1
+```
+curl 200 OK
 
 Case notes
 
