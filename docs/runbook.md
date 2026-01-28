@@ -36,8 +36,7 @@ diagnose:
 ```bash
 systemctl status nginx --no-pager
 ```
-Status: inactive
-
+Active: inactive (dead)
 ```bash
 ss -lntp | grep -E ':(80)\b' || echo "No :80 listener"
 ```
@@ -47,6 +46,9 @@ No :80 listener
 journalctl -u nginx -n 20 --no-pager
 ```
 systemd[1]: Stopped nginx.service - A high performance web server and a reverse proxy server.
+
+root cause:
+nginx остановлен (systemd unit inactive), порт 80 не слушается, поэтому curl не может подключиться.
 
 fix: 
 ```bash
