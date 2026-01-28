@@ -59,11 +59,68 @@ HTTP/1.1 200 OK
 
 Drill 2: битый конфиг
 
-reproduce: ...
+reproduce:
+Бэкап файла:
+```bash
+sudo cp /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/default.bak
+```
+Добавляем заведомо неверную строку в конец:
+```bash
+echo 'BROKEN' | sudo tee -a /etc/nginx/sites-enabled/default >/dev/null
+```
+Проверяем конфигурацию:
+```bash
+sudo nginx -t
+```
+Пробуем рестарт (ожидаем, что он не поднимется нормально):
+```bash
+sudo systemctl restart nginx
+```
 
-diagnose: ...
+diagnose: 
+Проверка конфига:
+```bash
+sudo nginx -t
+```
+2026/01/28 13:53:35 [emerg] 21289#21289: unexpected end of file, expecting ";" or "}" in /etc/nginx/sites-enabled/default:97
+nginx: configuration file /etc/nginx/nginx.conf test failed
 
-fix: ...
+Статус сервиса:
+```bash
+systemctl status nginx --no-pager
+```
+Active: failed (Result: exit-code)
+
+Логи:
+```bash
+journalctl -u nginx -n 10 --no-pager
+```
+nginx[21261]: 2026/01/28 13:53:01 [emerg] 21261#21261: unexpected end of file, expecting ";" or "}" in /etc/nginx/sites-enabled/default:97
+nginx[21261]: nginx: configuration file /etc/nginx/nginx.conf test failed
+systemd[1]: nginx.service: Control process exited, code=exited, status=1/FAILURE
+systemd[1]: nginx.service: Failed with result 'exit-code'.
+systemd[1]: Failed to start nginx.service - A high performance web server and a reverse proxy server.
+
+Порт 80:
+```bash
+ss -lntp | grep -E ':(80)\b' || echo "No :80 listener"
+```
+No :80 listener
+
+root cause:
+после изменения файла конфигурации сайтa nginx конфиг не проходит nginx -t, поэтому сервис не стартует/не слушает порт 80.
+
+fix: 
+```bash
+sudo mv /etc/nginx/sites-enabled/default.bak /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl restart nginx
+curl -I http://127.0.0.1
+```
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+
+curl 200 OK
 
 Drill 3: порт 80 занят
 
