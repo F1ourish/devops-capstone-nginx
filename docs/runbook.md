@@ -205,6 +205,11 @@ curl -I http://127.0.0.1
 sudo ss -lntp | grep -E ':(80|8081)\b'
 ```
 
+Быстрая проверка:
+```bash
+sudo ./scripts/check_nginx.sh
+```
+
 Case notes
 
 2026-01-28: nginx installed, active(running), curl 200 OK
