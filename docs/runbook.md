@@ -50,3 +50,4 @@ Case notes
 YYYY-MM-DD: ...
 
 
+2026-01-28: nginx installed, active(running), curl 200 OK
