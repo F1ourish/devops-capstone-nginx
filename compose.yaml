@@ -1,0 +1,10 @@
+services:
+  nginx:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.nginx
+    image: devops-capstone-nginx:local
+    ports:
+      - "8080:80"
+    environment:
+      TZ: Europe/Moscow
