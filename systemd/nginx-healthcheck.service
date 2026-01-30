@@ -1,0 +1,10 @@
+[Unit]
+Description=Nginx healthcheck (runs scripts/check_nginx.sh)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/flourish/projects/devops-capstone-nginx
+ExecStart=/home/flourish/projects/devops-capstone-nginx/scripts/check_nginx.sh
+

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run nginx healthcheck every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=nginx-healthcheck.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

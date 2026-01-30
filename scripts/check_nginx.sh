@@ -35,9 +35,11 @@ else
 	OK=0
 fi
 
-echo
-echo "(4) last logs ($SVC)"
-journalctl -u "$SVC" -n 20 --no-pager || true
+if [[ "$OK" == "0" ]]; then
+       echo	
+       echo "(4) last logs ($SVC)"
+       journalctl -u "$SVC" -n 20 --no-pager
+fi
 
 echo
 if [[ "$OK" == "1" ]]; then
@@ -47,3 +49,4 @@ else
 	echo "RESULT: FAIL"
 	exit 1
 fi
+
