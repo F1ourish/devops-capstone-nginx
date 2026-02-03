@@ -213,3 +213,53 @@ sudo ./scripts/check_nginx.sh
 Case notes
 
 2026-01-28: nginx installed, active(running), curl 200 OK
+
+## Docker/Compose: Nginx (контейнер)
+
+### Быстрый чек
+1. Контейнер и health: 
+```bash
+docker compose ps
+```
+2. Логи 
+```bash
+docker compose logs --tail 50 nginx
+```
+3. HTTP локально (хост → контейнер): 
+```bash
+curl -I http://127.0.0.1:8080
+```
+4. Проверка конфига внутри контейнера: 
+```bash
+docker compose exec nginx nginx -t
+```
+5. Healthcheck (встроенный в Compose)
+
+* Посмотреть, healthy/unhealthy: docker compose ps
+
+* Посмотреть детали healthcheck (если unhealthy):
+```bash
+docker inspect <container_id_or_name> --format '{{json .State.Health}}'
+```
+
+### Если health = unhealthy
+* Посмотреть логи: 
+```bash
+docker compose logs --tail 200 nginx
+```
+* Проверить конфиг ngins:
+```bash
+docker compose exec nginx nginx -t
+```
+* Проверить сам healthcheck вручную (как он делает внутри контейнера):
+```bash
+docker compose exec nginx sh -lc 'wget -qO- http://127.0.0.1/healthz >/dev/null 2>$1 || echo FAIL
+```
+* Если менял конфиги/compose - пересобрать и перезапустить:
+```bash
+docker compose up -d --build
+```
+
+Примечание:
+* Healthcheck внутри контейнера проверяет сервис "сам в себя"(127.0.0.1:80)
+* Проверка хоста по 127.0.0.1:8080 - это уже внешний взгляд (полезно для диагностики проброса портов)
