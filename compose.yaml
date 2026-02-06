@@ -12,7 +12,7 @@ services:
     volumes:
       - ./docker/nginx/conf.d:/etc/nginx/conf.d:ro
     healthcheck:
-      test: ["CMD-SHELL","wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL","wget -qO- http://127.0.0.1/healthz 2>/dev/null | grep -qx 'ok' || exit 1"]
       interval: 30s
       timeout: 3s
       retries: 3

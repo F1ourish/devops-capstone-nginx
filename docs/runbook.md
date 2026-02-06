@@ -263,3 +263,129 @@ docker compose up -d --build
 Примечание:
 * Healthcheck внутри контейнера проверяет сервис "сам в себя"(127.0.0.1:80)
 * Проверка хоста по 127.0.0.1:8080 - это уже внешний взгляд (полезно для диагностики проброса портов)
+
+
+## Docker/Compose: strict healthcheck (Release 0.3 step 3)
+### Что изменили
+* Добавлен endpoint /healthz в docker/nginx/conf.d/default.conf (точный путь).
+
+* Сделан fallback на 404 для любых прочих путей (чтобы опечатки в health URL не проходили).
+
+* Усилиен healthcheck в compose.yaml: теперь проверяем не только доступность URL, но и **точное содержимое ответа (ok)**.
+
+### Проверка после изменений
+1. Пересобрать и поднять сервис:
+```bash
+docker compose up -d --build
+```
+
+2. Убедиться, что контейнер healthy:
+```bash
+docker compose ps
+docker inspect --format='{{.State.Health.Status}}' devops-capstone-nginx-nginx-1
+```
+
+3. Проверить endpoint вручную:
+```bash
+docker compose exec nginx wget -qO- http://127.0.0.1/healthz ; echo
+```
+Ожидаем: ok
+
+4. Негативная проверка (опечатка пути):
+```bash
+docker compose exec nginx sh -lc "wget -qO- http://127.0.0.1/healthzz >/dev/null 2>&1; echo exit_code=$?"
+```
+Ожидаем: код не 0 (обычно 8 у wget), т.е. путь невалидный.
+
+### Почему это важно
+* Раньше healthcheck мог быть “слишком мягким”: сервис считался healthy даже при нестрогой проверке.
+
+* Теперь healthcheck проверяет корректный endpoint и корректный ответ, что ближе к прод-подходу.
+
+### Troubleshooting (коротко)
+* Если unhealthy:
+
+   1. docker compose logs --tail 100 nginx
+
+   2. docker compose exec nginx nginx -t
+
+   3. docker compose exec nginx wget -S -O- http://127.0.0.1/healthz
+
+   4. Проверить healthcheck.test в compose.yaml и путь /healthz в default.conf
+
+   5. Применить заново: docker compose up -d --build
+
+### Артефакты шага
+* compose.yaml
+
+* docker/nginx/conf.d/default.conf
+
+* docs/runbook.md
+
+### Commit message (рекомендуемый)
+* Harden Compose healthcheck and document strict validation in runbook
+
+## Drill 5: Docker healthcheck failed (container unhealthy)
+
+### Ключевой симптом
+`docker compose ps` показывает `STATUS: ... (unhealthy)`
+
+### reproduce
+
+1. Сломать ответ `/healthz` в `docker/nginx/conf.d/default.conf`
+(например, `return 200 "oops\n";` вместо `ok`)
+
+2. Применить конфиг в контейнере
+
+* `docker compose exec nginx nginx -t`
+
+* `docker compose exec nginx nginx -s reload`
+
+3. Подождать несколько интервалов healthcheck (обычно 60–120 сек)
+
+### diagnose
+
+* `docker compose ps`
+
+* `docker inspect --format='{{.State.Health.Status}}' devops-capstone-nginx-nginx-1`
+
+* `docker inspect --format='{{json .State.Health}}' devops-capstone-nginx-nginx-1`
+
+* `docker compose logs --tail 50 nginx`
+
+* `docker compose exec nginx sh -lc "wget -qO- http://127.0.0.1/healthz 2>/dev/null | grep -qx 'ok'; echo rc=$?"`
+
+### fix
+
+1. Вернуть корректный ответ health endpoint:
+`return 200 "ok\n";`
+
+2. Проверить и перезагрузить nginx внутри контейнера:
+
+* `docker compose exec nginx nginx -t`
+
+* `docker compose exec nginx nginx -s reload`
+
+3. Проверить вручную:
+
+* `docker compose exec nginx wget -qO- http://127.0.0.1/healthz ; echo`
+
+* должно быть `ok`
+
+4. Убедиться, что статус снова healthy:
+
+* `docker inspect --format='{{.State.Health.Status}}' devops-capstone-nginx-nginx-1`
+
+* при необходимости подождать 1–2 минуты
+
+### Root cause
+Healthcheck в Compose ожидает, что `/healthz` вернёт строку `ok`.
+После изменения ответа на `oops` команда проверки `grep -qx 'ok'` начала возвращать non-zero, из-за чего контейнер перешёл в `unhealthy.`
+
+### Prevention
+
+* Держать контракт health endpoint стабильным (`/healthz` -> `ok\n`)
+
+* Проверять конфиг перед reload: `nginx -t`
+
+* После изменений сразу делать smoke-check health endpoint
