@@ -389,3 +389,23 @@ Healthcheck в Compose ожидает, что `/healthz` вернёт строк
 * Проверять конфиг перед reload: `nginx -t`
 
 * После изменений сразу делать smoke-check health endpoint
+
+## Drill 6: broken nginx config in container
+
+### Ключевой симптом
+`docker compose exec nginx nginx -t` падает с `emerg/syntax error`
+
+### reproduce
+намеренно испортили `default.conf` (например, убрали `;`)
+
+### diagnose
+`nginx -t`, `docker compose logs`, `docker compose ps`
+
+### fix
+исправили синтаксис → `nginx -t` → `nginx -s reload` → проверка `curl` и health
+
+### Root cause
+ошибка синтаксиса в mounted-конфиге nginx
+
+### Prevention
+всегда делать `nginx -t` перед reload/restart; маленькие атомарные правки; фиксировать в git
