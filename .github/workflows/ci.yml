@@ -22,6 +22,9 @@ jobs:
       - name: Build and start
         run: docker compose up -d --build
 
+      - name: Validate nginx config (nginx -t)
+        run: docker compose exec -T nginx nginx -t
+
       - name: Wait for healthcheck
         run: |
           cid="$(docker compose ps -q nginx)"
@@ -43,9 +46,17 @@ jobs:
 
       - name: Verify /healthz body
         run: |
-          body="$(curl -fsS http://127.0.0.1:8080/healthz)"
+          body=""
+          for i in {1..5}; do
+            if body="$(curl -fsS http://127.0.0.1:8080/healthz)"; then
+              break
+            fi
+            sleep 1
+          done
+
           echo "body='$body'"
-          [ "$body" = "ok" ]
+          [ "$body" = "ok" ] || exit 1
+
 
       - name: Compose status
         if: always()

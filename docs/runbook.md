@@ -409,3 +409,39 @@ Healthcheck в Compose ожидает, что `/healthz` вернёт строк
 
 ### Prevention
 всегда делать `nginx -t` перед reload/restart; маленькие атомарные правки; фиксировать в git
+
+## CI (GitHub Actions): что проверяем и как дебажить
+
+### Что проверяет CI
+
+* Поднимает сервисы через `docker compose up -d --build`
+
+* Проверяет валидность конфига nginx: `nginx -t` внутри контейнера
+
+* Ждёт, пока контейнер `nginx` станет `healthy` (healthcheck из `compose.yaml`)
+
+* Проверяет контракт health endpoint: `GET http://127.0.0.1:8080/healthz` должен вернуть тело `ok`
+
+* Всегда делает cleanup: `docker compose down -v`
+
+Где смотреть результат
+
+GitHub → вкладка Actions → выбрать workflow `CI - Compose Nginx` → открыть job `compose-checks` → смотреть шаги по порядку
+
+Если CI упал: типовой порядок дебага
+
+Посмотреть шаг, который упал (обычно `Validate nginx config`, `Wait for healthcheck` или `Verify /healthz body`)
+
+Посмотреть `docker compose ps` (шаг `Compose status`)
+
+Посмотреть логи nginx (шаг `Logs on failure`)
+
+### Как повторить CI локально (на VM)
+```bash
+docker compose up -d --build
+docker compose exec -T nginx nginx -t
+docker compose ps
+curl -fsS http://127.0.0.1:8080/healthz
+docker compose logs --tail 200 nginx
+docker compose down -v
+```
