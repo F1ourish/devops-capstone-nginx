@@ -445,3 +445,33 @@ curl -fsS http://127.0.0.1:8080/healthz
 docker compose logs --tail 200 nginx
 docker compose down -v
 ```
+
+## CI drill: broken /healthz → CI must fail
+
+Цель: проверить, что CI действительно ловит деградацию сервиса, а не “всегда зелёный”.
+
+Сценарий:
+
+1. В `docker/nginx/conf.d/default.conf` временно изменить endpoint `location = /healthz` так, чтобы он возвращал не `ok`, а другое тело (например `oops`), при этом HTTP-код может оставаться 200.
+
+2. Запушить изменения и убедиться, что GitHub Actions падает на шаге ожидания healthcheck (Wait for healthcheck) или на проверке body.
+
+Как выглядит симптом в CI:
+
+* в `docker compose ps` контейнер остаётся `Up ... (health: starting)` и CI по таймауту завершает job ошибкой;
+
+* в логах nginx видно регулярные запросы `GET /healthz`, но healthcheck всё равно не становится `healthy` (потому что тело ответа не совпадает с ожидаемым `ok`).
+
+Почему так:
+
+* Docker healthcheck в `compose.yaml` проверяет не только доступность URL, но и содержимое ответа (`grep -qx 'ok'`). Если тело не `ok`, команда healthcheck возвращает exit code 1, и контейнер никогда не перейдёт в `healthy`.
+
+Восстановление после drill:
+
+1. Вернуть `return 200 "ok\n"`; для `/healthz`.
+
+2. Пересобрать/перезапустить сервис (`docker compose up -d --build`).
+
+3. Убедиться, что статус снова healthy.
+
+4. Запушить фикс и проверить, что CI снова зелёный.
