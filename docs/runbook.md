@@ -322,7 +322,7 @@ docker compose exec nginx sh -lc "wget -qO- http://127.0.0.1/healthzz >/dev/null
 
 * docs/runbook.md
 
-### Commit message (рекомендуемый)
+### Commit message
 * Harden Compose healthcheck and document strict validation in runbook
 
 ## Drill 5: Docker healthcheck failed (container unhealthy)
@@ -475,3 +475,78 @@ docker compose down -v
 3. Убедиться, что статус снова healthy.
 
 4. Запушить фикс и проверить, что CI снова зелёный.
+
+
+## CI drill 2: broken nginx config → CI must fail (nginx -t)
+
+Цель
+Проверить, что CI ловит синтаксические/логические ошибки в конфигурации nginx до того, как сервис будет считаться “живым”.
+
+### Сценарий (reproduce)
+
+1. Внести ошибку в `docker/nginx/conf.d/default.conf` (например: неверная директива, пропущенная `;`, дублирующий `location /`, некорректные блоки и т.п.).
+
+2. Закоммитить и запушить изменения.
+
+3. Убедиться, что GitHub Actions падает.
+
+### Ключевой симптом в CI
+
+* Workflow становится красным.
+
+* Падает шаг `Validate nginx config (nginx -t)` (команда проверки конфига внутри контейнера).
+
+### Диагностика (что смотреть)
+
+1. GitHub → Actions → нужный run → job `compose-checks`.
+
+2. Открыть шаг `Validate nginx config (nginx -t)` и посмотреть вывод `nginx: [emerg] ...` (там обычно указана строка/файл и причина).
+
+3. Для локального повторения: выполнить `nginx -t` внутри контейнера и убедиться, что ошибка воспроизводится.
+
+### Root cause (почему падает)
+
+* Проверка `nginx -t` специально стоит в CI до healthcheck и до функциональных проверок, чтобы “завалить сборку” как можно раньше, если конфиг некорректен.
+
+### Fix (восстановление)
+
+1. Исправить `docker/nginx/conf.d/default.conf`.
+
+2. Локально проверить `nginx -t`, затем применить изменения (reload) и убедиться, что сервис снова работает.
+
+3. Закоммитить фикс и запушить — CI должен снова стать зелёным.
+
+### Примечание
+Этот drill дополняет drill про `/healthz`:
+
+* Drill 1 проверяет “контракт здоровья” (health endpoint и healthcheck).
+
+* Drill 2 проверяет “валидность конфигурации” (nginx -t) и должен падать быстрее, чем ожидание healthy.
+
+
+## Как применять изменения (nginx + compose): что запускать в какой ситуации
+
+### Если изменился только nginx-конфиг (conf.d), который примонтирован volume’ом
+
+* Проверить конфиг: `docker compose exec -T nginx nginx -t`
+
+* Применить без пересоздания контейнера: `docker compose exec -T nginx nginx -s reload`
+
+### Если нужно просто перезапустить контейнер (без пересборки образа)
+
+* `docker compose restart nginx`
+  Использовать, когда reload не подходит или нужно “с нуля” поднять процесс nginx внутри контейнера.
+
+### Если изменился compose.yaml (ports/env/volumes/healthcheck/restart и т.п.)
+
+* `docker compose up -d`
+  Compose приведёт сервис к описанному состоянию; при необходимости контейнер будет пересоздан.
+
+### Если изменился Dockerfile или то, что собирается в образ (build context)
+
+* `docker compose up -d --build`
+  Пересобирает образ и поднимет контейнеры на новом image.
+
+### Cleanup (особенно полезно после экспериментов/CI-логики)
+
+* `docker compose down -v` (остановить контейнеры и удалить volumes)
