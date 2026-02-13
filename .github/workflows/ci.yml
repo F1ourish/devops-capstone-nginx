@@ -16,7 +16,7 @@ jobs:
 
       - name: Install yamlint
         run: |
-          python3 -m pip install --user yamlint
+          python3 -m pip install --user yamllint
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: YAML lint (relaxed)
