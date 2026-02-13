@@ -12,18 +12,18 @@ jobs:
 
     steps:
       - name: Checkout repository
-        users: actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: Install yamlint
         run: |
           python3 -m pip install --user yamlint
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-        - name: YAML lint (relaxed)
-          run: yamllint -d relaxed .
+      - name: YAML lint (relaxed)
+        run: yamllint -d relaxed .
 
-        - name: Validate Compose file
-          run: docker compose config
+      - name: Validate Compose file
+        run: docker compose config
 
   compose-checks:
     runs-on: ubuntu-latest
