@@ -1,552 +1,361 @@
-# Runbook: Nginx (Release 0.1)
-
-## Быстрая проверка (2 минуты)
-1) Сервис жив?
-```bash
-systemctl status nginx --no-pager
-```
-2) Порт слушается?
-```bash
-ss -lntp | grep -E ':(80)\b' || echo "No :80 listener"
-```
-
-3) HTTP отвечает?
-```bash
-curl -I http://127.0.0.1
-```
-
-4) Логи (последние 50 строк)
-```bash
-journalctl -u nginx -n 50 --no-pager
-```
-
-
-Failure drills (заготовка)
-### Drill 1: nginx остановлен
-
-reproduce: 
-```bash
-sudo systemctl stop nginx
-curl -I http://127.0.0.1
-```
-curl: (7) Failed to connect to 127.0.0.1 port 80 after 0 ms: Couldn't connect to server 
-
-diagnose: 
-```bash
-systemctl status nginx --no-pager
-```
-Active: inactive (dead)
-```bash
-ss -lntp | grep -E ':(80)\b' || echo "No :80 listener"
-```
-No :80 listener
-
-```bash
-journalctl -u nginx -n 20 --no-pager
-```
-systemd[1]: Stopped nginx.service - A high performance web server and a reverse proxy server.
-
-root cause:
-nginx остановлен (systemd unit inactive), порт 80 не слушается, поэтому curl не может подключиться.
-
-fix: 
-```bash
-sudo systemctl start nginx
-curl -I http://127.0.0.1
-```
-HTTP/1.1 200 OK
-
-### Drill 2: битый конфиг
-
-reproduce:
-Бэкап файла:
-```bash
-sudo cp /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/default.bak
-```
-Добавляем заведомо неверную строку в конец:
-```bash
-echo 'BROKEN' | sudo tee -a /etc/nginx/sites-enabled/default >/dev/null
-```
-Проверяем конфигурацию:
-```bash
-sudo nginx -t
-```
-Пробуем рестарт (ожидаем, что он не поднимется нормально):
-```bash
-sudo systemctl restart nginx
-```
-
-diagnose: 
-Проверка конфига:
-```bash
-sudo nginx -t
-```
-2026/01/28 13:53:35 [emerg] 21289#21289: unexpected end of file, expecting ";" or "}" in /etc/nginx/sites-enabled/default:97
-nginx: configuration file /etc/nginx/nginx.conf test failed
-
-Статус сервиса:
-```bash
-systemctl status nginx --no-pager
-```
-Active: failed (Result: exit-code)
-
-Логи:
-```bash
-journalctl -u nginx -n 10 --no-pager
-```
-nginx[21261]: 2026/01/28 13:53:01 [emerg] 21261#21261: unexpected end of file, expecting ";" or "}" in /etc/nginx/sites-enabled/default:97
-nginx[21261]: nginx: configuration file /etc/nginx/nginx.conf test failed
-systemd[1]: nginx.service: Control process exited, code=exited, status=1/FAILURE
-systemd[1]: nginx.service: Failed with result 'exit-code'.
-systemd[1]: Failed to start nginx.service - A high performance web server and a reverse proxy server.
-
-Порт 80:
-```bash
-ss -lntp | grep -E ':(80)\b' || echo "No :80 listener"
-```
-No :80 listener
-
-root cause:
-после изменения файла конфигурации сайтa nginx конфиг не проходит nginx -t, поэтому сервис не стартует/не слушает порт 80.
-
-fix: 
-```bash
-sudo mv /etc/nginx/sites-enabled/default.bak /etc/nginx/sites-enabled/default
-sudo nginx -t
-sudo systemctl restart nginx
-curl -I http://127.0.0.1
-```
-nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
-nginx: configuration file /etc/nginx/nginx.conf test is successful
-
-curl 200 OK
-
-### Drill 3: порт 80 занят
-
-reproduce: 
-```bash
-sudo apt -y install apache2
-sudo systemctl enable --now apache2
-```
-
-diagnose: 
-```bash
-systemctl status apache2 --no-pager
-journalctl -u apache2 -n 20 --no-pager
-```
-Ключевой симптом в логах: Address already in use ... could not bind to ...:80
-
-Проверяем, кто слушает 80 
-```bash
-sudo ss -lntp | grep -E ':(80)\b' || echo "No :80 listener"
-```
-LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=23808,fd=5),("nginx",pid=23807,fd=5),("nginx",pid=23806,fd=5),("nginx",pid=23805,fd=5),("nginx",pid=23804,fd=5),("nginx",pid=23803,fd=5),("nginx",pid=23802,fd=5),("nginx",pid=23801,fd=5),("nginx",pid=23800,fd=5))
-LISTEN 0      511             [::]:80           [::]:*    users:(("nginx",pid=23808,fd=6),("nginx",pid=23807,fd=6),("nginx",pid=23806,fd=6),("nginx",pid=23805,fd=6),("nginx",pid=23804,fd=6),("nginx",pid=23803,fd=6),("nginx",pid=23802,fd=6),("nginx",pid=23801,fd=6),("nginx",pid=23800,fd=6))
-
-root cause:
-порт 80 уже занят nginx (LISTEN на 0.0.0.0:80 и/или [::]:80), поэтому apache2 не может забиндиться и падает с ошибкой Address already in use (98)
-
-fix:
-```bash
-sudo systemctl stop nginx
-sudo systemctl start apache2
-curl -I http://127.0.0.1
-
-sudo systemctl stop apache2
-sudo systemctl disable apache2
-sudo systemctl start nginx
-curl -I http://127.0.0.1
-```
-curl 200 OK
-
-### Drill 4: альтернативное решение конфликта портов — apache2 на 8081 (nginx остаётся на 80)
-
-reproduce:
-```bash
-sudo systemctl enable --now apache2
-```
-# ожидаемо: упадёт из-за занятого :80
-
-diagnose:
-Ключевой симптом в логах apache2: Address already in use ... could not bind to ...:80
-Проверяем, кто занял :80:
-```bash
-sudo ss -tlnp | grep -E ':(80)\b'
-```
-
-root cause:
-порт 80 занят nginx, поэтому apache2 не может забиндиться на :80 и не стартует.
-
-fix:
-Меняем порт apache2 на 8081:
-```bash
-sudo cp /etc/apache2/ports.conf /etc/apache2/ports.conf.bak
-sudo vim /etc/apache2/ports.conf
-# Listen 80 -> Listen 8081
-```
-Меняем VirtualHost на 8081:
-```bash
-sudo vim /etc/apache2/sites-enabled/000-default.conf
-# <VirtualHost *:80> -> <VirtualHost *:8081>
-```
-Перезапускаем apache2 и проверяем:
-```bash
-sudo systemctl restart apache2
-systemctl status apache2 --no-pager
-curl -I http://127.0.0.1:8081
-```
-LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=23808,fd=5),("nginx",pid=23807,fd=5),("nginx",pid=23806,fd=5),("nginx",pid=23805,fd=5),("nginx",pid=23804,fd=5),("nginx",pid=23803,fd=5),("nginx",pid=23802,fd=5),("nginx",pid=23801,fd=5),("nginx",pid=23800,fd=5))
-LISTEN 0      511                *:8081            *:*    users:(("apache2",pid=24242,fd=4),("apache2",pid=24241,fd=4),("apache2",pid=24239,fd=4))                                                                                                                                                
-LISTEN 0      511             [::]:80           [::]:*    users:(("nginx",pid=23808,fd=6),("nginx",pid=23807,fd=6),("nginx",pid=23806,fd=6),("nginx",pid=23805,fd=6),("nginx",pid=23804,fd=6),("nginx",pid=23803,fd=6),("nginx",pid=23802,fd=6),("nginx",pid=23801,fd=6),("nginx",pid=23800,fd=6))
-
-Убеждаемся, что nginx всё ещё на 80:
-```bash
-curl -I http://127.0.0.1
-sudo ss -lntp | grep -E ':(80|8081)\b'
-```
-
-Быстрая проверка:
-```bash
-sudo ./scripts/check_nginx.sh
-```
-
-Case notes
-
-2026-01-28: nginx installed, active(running), curl 200 OK
-
-## Docker/Compose: Nginx (контейнер)
-
-### Быстрый чек
-1. Контейнер и health: 
-```bash
-docker compose ps
-```
-2. Логи 
-```bash
-docker compose logs --tail 50 nginx
-```
-3. HTTP локально (хост → контейнер): 
-```bash
-curl -I http://127.0.0.1:8080
-```
-4. Проверка конфига внутри контейнера: 
-```bash
-docker compose exec nginx nginx -t
-```
-5. Healthcheck (встроенный в Compose)
-
-* Посмотреть, healthy/unhealthy: docker compose ps
-
-* Посмотреть детали healthcheck (если unhealthy):
-```bash
-docker inspect <container_id_or_name> --format '{{json .State.Health}}'
-```
-
-### Если health = unhealthy
-* Посмотреть логи: 
-```bash
-docker compose logs --tail 200 nginx
-```
-* Проверить конфиг ngins:
-```bash
-docker compose exec nginx nginx -t
-```
-* Проверить сам healthcheck вручную (как он делает внутри контейнера):
-```bash
-docker compose exec nginx sh -lc 'wget -qO- http://127.0.0.1/healthz >/dev/null 2>$1 || echo FAIL
-```
-* Если менял конфиги/compose - пересобрать и перезапустить:
-```bash
-docker compose up -d --build
-```
-
-Примечание:
-* Healthcheck внутри контейнера проверяет сервис "сам в себя"(127.0.0.1:80)
-* Проверка хоста по 127.0.0.1:8080 - это уже внешний взгляд (полезно для диагностики проброса портов)
-
-
-## Docker/Compose: strict healthcheck (Release 0.3 step 3)
-### Что изменили
-* Добавлен endpoint /healthz в docker/nginx/conf.d/default.conf (точный путь).
-
-* Сделан fallback на 404 для любых прочих путей (чтобы опечатки в health URL не проходили).
+# Runbook
 
-* Усилиен healthcheck в compose.yaml: теперь проверяем не только доступность URL, но и **точное содержимое ответа (ok)**.
+## Назначение
 
-### Проверка после изменений
-1. Пересобрать и поднять сервис:
-```bash
-docker compose up -d --build
-```
+Этот документ описывает базовые операционные действия для работы с сервисом Nginx в текущей версии проекта.
 
-2. Убедиться, что контейнер healthy:
-```bash
-docker compose ps
-docker inspect --format='{{.State.Health.Status}}' devops-capstone-nginx-nginx-1
-```
+Он используется как практический runbook для запуска, остановки, перезапуска, проверки состояния, базовой валидации конфигурации и отработки типовых сценариев отказа.
 
-3. Проверить endpoint вручную:
-```bash
-docker compose exec nginx wget -qO- http://127.0.0.1/healthz ; echo
-```
-Ожидаем: ok
+Для быстрых проверок состояния и первичной диагностики следует использовать `docs/observability.md`.
 
-4. Негативная проверка (опечатка пути):
-```bash
-docker compose exec nginx sh -lc "wget -qO- http://127.0.0.1/healthzz >/dev/null 2>&1; echo exit_code=$?"
-```
-Ожидаем: код не 0 (обычно 8 у wget), т.е. путь невалидный.
+## Предварительные условия
 
-### Почему это важно
-* Раньше healthcheck мог быть “слишком мягким”: сервис считался healthy даже при нестрогой проверке.
+Перед выполнением действий из этого документа предполагается, что:
 
-* Теперь healthcheck проверяет корректный endpoint и корректный ответ, что ближе к прод-подходу.
+* Docker и Docker Compose установлены и доступны в системе
+* проект открыт в корректной директории репозитория
+* файл compose.yaml находится в актуальном состоянии
+* конфигурация Nginx и связанные файлы не содержат непроверенных изменений
+* пользователь выполняет команды из корня репозитория
 
-### Troubleshooting (коротко)
-* Если unhealthy:
+## Основные операционные действия
 
-   1. docker compose logs --tail 100 nginx
+### Сборка и запуск сервиса
 
-   2. docker compose exec nginx nginx -t
+Команда: `docker compose up -d --build`
 
-   3. docker compose exec nginx wget -S -O- http://127.0.0.1/healthz
+Назначение:
 
-   4. Проверить healthcheck.test в compose.yaml и путь /healthz в default.conf
+* собрать актуальный образ
+* запустить сервис в фоне
+* применить изменения в конфигурации и Docker-слое
 
-   5. Применить заново: docker compose up -d --build
+### Остановка сервиса
 
-### Артефакты шага
-* compose.yaml
+Команда: `docker compose down`
 
-* docker/nginx/conf.d/default.conf
+Назначение:
 
-* docs/runbook.md
+* остановить контейнеры проекта
+* удалить контейнеры, созданные текущим Compose-проектом
 
-### Commit message
-* Harden Compose healthcheck and document strict validation in runbook
+### Перезапуск сервиса
 
-## Drill 5: Docker healthcheck failed (container unhealthy)
+Команда: `docker compose restart nginx`
 
-### Ключевой симптом
-`docker compose ps` показывает `STATUS: ... (unhealthy)`
+Назначение:
 
-### reproduce
+* перезапустить сервис `nginx` без полной пересборки
 
-1. Сломать ответ `/healthz` в `docker/nginx/conf.d/default.conf`
-(например, `return 200 "oops\n";` вместо `ok`)
+### Просмотр состояния контейнера
 
-2. Применить конфиг в контейнере
+Команда: `docker compose ps`
 
-* `docker compose exec nginx nginx -t`
+Назначение:
 
-* `docker compose exec nginx nginx -s reload`
+* проверить, что контейнер запущен
+* увидеть текущее состояние сервиса
+* подтвердить отсутствие Exited или restart loop
 
-3. Подождать несколько интервалов healthcheck (обычно 60–120 сек)
+### Просмотр логов
 
-### diagnose
+Команда: `docker compose logs nginx`
 
-* `docker compose ps`
+Назначение:
 
-* `docker inspect --format='{{.State.Health.Status}}' devops-capstone-nginx-nginx-1`
+* посмотреть ошибки запуска
+* проверить runtime-сообщения сервиса
+* получить первичную информацию о причине сбоя
 
-* `docker inspect --format='{{json .State.Health}}' devops-capstone-nginx-nginx-1`
+### Просмотр последних строк логов
 
-* `docker compose logs --tail 50 nginx`
+Команда: `docker compose logs --tail=50 nginx`
 
-* `docker compose exec nginx sh -lc "wget -qO- http://127.0.0.1/healthz 2>/dev/null | grep -qx 'ok'; echo rc=$?"`
+Назначение:
 
-### fix
+* быстро посмотреть последние события без полного вывода логов
+* использовать при точечной диагностике после недавних изменений или сбоя
 
-1. Вернуть корректный ответ health endpoint:
-`return 200 "ok\n";`
+### Проверка конфигурации Nginx
 
-2. Проверить и перезагрузить nginx внутри контейнера:
+Команда: `docker compose exec nginx nginx -t`
 
-* `docker compose exec nginx nginx -t`
+Назначение:
 
-* `docker compose exec nginx nginx -s reload`
+* проверить валидность конфигурации Nginx в запущенном контейнере
+* убедиться, что конфигурация не содержит ошибок
 
-3. Проверить вручную:
+### Проверка конфигурации Nginx, если контейнер не запущен
 
-* `docker compose exec nginx wget -qO- http://127.0.0.1/healthz ; echo`
+Команда: `docker compose run --rm nginx nginx -t`
 
-* должно быть `ok`
+Назначение:
 
-4. Убедиться, что статус снова healthy:
+* проверить конфигурацию Nginx без использования `exec`
+* использовать этот способ, если контейнер находится в состоянии `Exited` или ещё не запущен
 
-* `docker inspect --format='{{.State.Health.Status}}' devops-capstone-nginx-nginx-1`
+### Проверка итоговой конфигурации Compose
 
-* при необходимости подождать 1–2 минуты
+Команда: `docker compose config`
 
-### Root cause
-Healthcheck в Compose ожидает, что `/healthz` вернёт строку `ok`.
-После изменения ответа на `oops` команда проверки `grep -qx 'ok'` начала возвращать non-zero, из-за чего контейнер перешёл в `unhealthy.`
+Назначение:
 
-### Prevention
+* проверить итоговую Compose-конфигурацию
+* убедиться, что файл `compose.yaml` и связанные параметры валидны
 
-* Держать контракт health endpoint стабильным (`/healthz` -> `ok\n`)
+### Проверка основного endpoint
 
-* Проверять конфиг перед reload: `nginx -t`
+Команда: `curl -i http://127.0.0.1:8080/`
 
-* После изменений сразу делать smoke-check health endpoint
+Назначение:
 
-## Drill 6: broken nginx config in container
+* проверить доступность основного HTTP endpoint
+* убедиться, что сервис отдаёт ожидаемый ответ
 
-### Ключевой симптом
-`docker compose exec nginx nginx -t` падает с `emerg/syntax error`
+### Проверка health endpoint
 
-### reproduce
-намеренно испортили `default.conf` (например, убрали `;`)
+Команда: `curl -i http://127.0.0.1:8080/healthz`
 
-### diagnose
-`nginx -t`, `docker compose logs`, `docker compose ps`
+Назначение:
 
-### fix
-исправили синтаксис → `nginx -t` → `nginx -s reload` → проверка `curl` и health
+* проверить доступность технического health endpoint
+* убедиться, что сервис возвращает ожидаемый health-ответ
 
-### Root cause
-ошибка синтаксиса в mounted-конфиге nginx
+## Базовый порядок проверки после изменений
 
-### Prevention
-всегда делать `nginx -t` перед reload/restart; маленькие атомарные правки; фиксировать в git
+После внесения изменений рекомендуется выполнять следующий минимальный набор проверок:
 
-## CI (GitHub Actions): что проверяем и как дебажить
+1. Проверить итоговую конфигурацию Compose
+Команда: `docker compose config`
+2. Проверить конфигурацию Nginx
+Команда: `docker compose exec nginx nginx -t`
+3. Пересобрать и запустить сервис
+Команда: `docker compose up -d --build`
+4. Проверить состояние контейнера
+Команда: `docker compose ps`
+5. Проверить основной endpoint `/`
+Команда: `curl -i http://127.0.0.1:8080/`
+6. Проверить health endpoint /healthz
+Команда: `curl -i http://127.0.0.1:8080/healthz`
+7. При необходимости проверить логи
+Команда: `docker compose logs nginx`
 
-### Что проверяет CI
+## Действия при типовых ситуациях
 
-* Поднимает сервисы через `docker compose up -d --build`
+### Сервис не отвечает по HTTP
 
-* Проверяет валидность конфига nginx: `nginx -t` внутри контейнера
+Рекомендуемый порядок действий:
 
-* Ждёт, пока контейнер `nginx` станет `healthy` (healthcheck из `compose.yaml`)
+1. Проверить основной endpoint `/`
+Команда: `curl -i http://127.0.0.1:8080/`
+2. Проверить health endpoint `/healthz`
+Команда: `curl -i http://127.0.0.1:8080/healthz`
+3. Проверить состояние контейнера
+Команда: `docker compose ps`
+4. Проверить логи контейнера
+Команда: `docker compose logs nginx`
+5. Проверить конфигурацию Nginx
+Команда: `docker compose exec nginx nginx -t`
 
-* Проверяет контракт health endpoint: `GET http://127.0.0.1:8080/healthz` должен вернуть тело `ok`
+### Контейнер завершился после запуска
 
-* Всегда делает cleanup: `docker compose down -v`
+Рекомендуемый порядок действий:
 
-Где смотреть результат
+1. Проверить состояние контейнера
+Команда: `docker compose ps`
+2. Проверить логи контейнера
+Команда: `docker compose logs nginx`
+3. Проверить конфигурацию Nginx через `run --rm`
+Команда: `docker compose run --rm nginx nginx -t`
+4. Проверить итоговую конфигурацию Compose
+Команда: `docker compose config`
+5. После исправлений повторно запустить сервис
+Команда: `docker compose up -d --build`
 
-GitHub → вкладка Actions → выбрать workflow `CI - Compose Nginx` → открыть job `compose-checks` → смотреть шаги по порядку
+### Изменения внесены, но результат не соответствует ожиданиям
 
-Если CI упал: типовой порядок дебага
+Рекомендуемый порядок действий:
 
-Посмотреть шаг, который упал (обычно `Validate nginx config`, `Wait for healthcheck` или `Verify /healthz body`)
+1. Проверить, что изменения сохранены в нужных файлах
+2. Проверить итоговую конфигурацию Compose
+Команда: `docker compose config`
+3. Проверить конфигурацию Nginx
+Команда: `docker compose exec nginx nginx -t`
+4. Повторно пересобрать и запустить сервис
+Команда: `docker compose up -d --build`
+5. Проверить HTTP-ответы и логи
+Команды:
+* `curl -i http://127.0.0.1:8080/`
+* `curl -i http://127.0.0.1:8080/healthz`
+* `docker compose logs nginx`
 
-Посмотреть `docker compose ps` (шаг `Compose status`)
+# Failure drills
 
-Посмотреть логи nginx (шаг `Logs on failure`)
-
-### Как повторить CI локально (на VM)
-```bash
-docker compose up -d --build
-docker compose exec -T nginx nginx -t
-docker compose ps
-curl -fsS http://127.0.0.1:8080/healthz
-docker compose logs --tail 200 nginx
-docker compose down -v
-```
-
-## CI drill: broken /healthz → CI must fail
-
-Цель: проверить, что CI действительно ловит деградацию сервиса, а не “всегда зелёный”.
+## Drill 1. `/healthz` недоступен
 
 Сценарий:
 
-1. В `docker/nginx/conf.d/default.conf` временно изменить endpoint `location = /healthz` так, чтобы он возвращал не `ok`, а другое тело (например `oops`), при этом HTTP-код может оставаться 200.
+* основной сервис может продолжать отвечать на `/`
+* health endpoint `/healthz` недоступен или возвращает неожиданный ответ
 
-2. Запушить изменения и убедиться, что GitHub Actions падает на шаге ожидания healthcheck (Wait for healthcheck) или на проверке body.
+Цель:
 
-Как выглядит симптом в CI:
+* подтвердить, что проблема ограничена health endpoint
+* отработать базовый порядок диагностики от внешнего симптома к конфигурации
 
-* в `docker compose ps` контейнер остаётся `Up ... (health: starting)` и CI по таймауту завершает job ошибкой;
+Шаги:
 
-* в логах nginx видно регулярные запросы `GET /healthz`, но healthcheck всё равно не становится `healthy` (потому что тело ответа не совпадает с ожидаемым `ok`).
+1. Проверить основной endpoint `/`
+Команда: `curl -i http://127.0.0.1:8080/`
+2. Проверить health endpoint `/healthz`
+Команда: `curl -i http://127.0.0.1:8080/healthz`
+3. Проверить состояние контейнера
+Команда: `docker compose ps`
+4. Проверить логи контейнера
+Команда: `docker compose logs nginx`
+5. Проверить конфигурацию Nginx
+Команда: `docker compose exec nginx nginx -t`
 
-Почему так:
+Ожидаемый результат:
 
-* Docker healthcheck в `compose.yaml` проверяет не только доступность URL, но и содержимое ответа (`grep -qx 'ok'`). Если тело не `ok`, команда healthcheck возвращает exit code 1, и контейнер никогда не перейдёт в `healthy`.
+* причина сбоя локализована на уровне endpoint, логов или конфигурации
+* зафиксирован воспроизводимый порядок проверки
 
-Восстановление после drill:
+## Drill 2. `/` недоступен
 
-1. Вернуть `return 200 "ok\n"`; для `/healthz`.
+Сценарий:
 
-2. Пересобрать/перезапустить сервис (`docker compose up -d --build`).
+* основной endpoint `/` недоступен или возвращает неожиданный ответ
+* при этом `/healthz` может работать корректно
 
-3. Убедиться, что статус снова healthy.
+Цель:
 
-4. Запушить фикс и проверить, что CI снова зелёный.
+* отличить сбой основного маршрута от общего отказа сервиса
+* проверить внешний и внутренний сигналы состояния
 
+Шаги:
 
-## CI drill 2: broken nginx config → CI must fail (nginx -t)
+1. Проверить основной endpoint `/`
+Команда: `curl -i http://127.0.0.1:8080/`
+2. Проверить health endpoint `/healthz`
+Команда: `curl -i http://127.0.0.1:8080/healthz`
+3. Проверить состояние контейнера
+Команда: `docker compose ps`
+4. Проверить логи контейнера
+Команда: `docker compose logs nginx`
+5. Проверить конфигурацию Nginx
+Команда: `docker compose exec nginx nginx -t`
 
-Цель
-Проверить, что CI ловит синтаксические/логические ошибки в конфигурации nginx до того, как сервис будет считаться “живым”.
+Ожидаемый результат:
 
-### Сценарий (reproduce)
+* подтверждено, затрагивает ли проблема только основной маршрут или весь сервис
+* определён следующий шаг диагностики или исправления
 
-1. Внести ошибку в `docker/nginx/conf.d/default.conf` (например: неверная директива, пропущенная `;`, дублирующий `location /`, некорректные блоки и т.п.).
+## Drill 3. Контейнер переходит в `Exited` после запуска
 
-2. Закоммитить и запушить изменения.
+Сценарий:
 
-3. Убедиться, что GitHub Actions падает.
+* после `docker compose up -d --build` контейнер не остаётся в состоянии `Up`
+* сервис завершается вскоре после запуска
 
-### Ключевой симптом в CI
+Цель:
 
-* Workflow становится красным.
+* отработать диагностику сбоя процесса внутри контейнера
+* закрепить различие между `exec` и `run --rm` для проверки конфигурации
 
-* Падает шаг `Validate nginx config (nginx -t)` (команда проверки конфига внутри контейнера).
+Шаги:
 
-### Диагностика (что смотреть)
+1. Проверить состояние контейнера
+Команда: `docker compose ps`
+2. Проверить логи контейнера
+Команда: `docker compose logs nginx`
+3. Проверить конфигурацию Nginx без `exec`
+Команда: `docker compose run --rm nginx nginx -t`
+4. Проверить итоговую конфигурацию Compose
+Команда: `docker compose config`
+5. После исправлений повторно запустить сервис
+Команда: `docker compose up -d --build`
 
-1. GitHub → Actions → нужный run → job `compose-checks`.
+Ожидаемый результат:
 
-2. Открыть шаг `Validate nginx config (nginx -t)` и посмотреть вывод `nginx: [emerg] ...` (там обычно указана строка/файл и причина).
+* установлена причина завершения контейнера
+* подтверждено, что после исправлений контейнер остаётся в состоянии Up
 
-3. Для локального повторения: выполнить `nginx -t` внутри контейнера и убедиться, что ошибка воспроизводится.
+## Drill 4. Ошибка конфигурации после изменения Nginx
 
-### Root cause (почему падает)
+Сценарий:
 
-* Проверка `nginx -t` специально стоит в CI до healthcheck и до функциональных проверок, чтобы “завалить сборку” как можно раньше, если конфиг некорректен.
+* после правки конфигурации Nginx проверка `nginx -t` завершается с ошибкой
+* сервис может не запускаться или работать некорректно
 
-### Fix (восстановление)
+Цель:
 
-1. Исправить `docker/nginx/conf.d/default.conf`.
+* отработать безопасную проверку конфигурации до и после перезапуска
+* закрепить важность config validation перед эксплуатационными действиями
 
-2. Локально проверить `nginx -t`, затем применить изменения (reload) и убедиться, что сервис снова работает.
+Шаги:
 
-3. Закоммитить фикс и запушить — CI должен снова стать зелёным.
+1. Проверить конфигурацию Nginx
+Команда: `docker compose exec nginx nginx -t`
+2. Если контейнер не запущен, выполнить альтернативную проверку
+Команда: `docker compose run --rm nginx nginx -t`
+3. Проверить итоговую конфигурацию Compose
+Команда: `docker compose config`
+4. Исправить конфигурацию и повторить проверку
+5. Пересобрать и запустить сервис
+Команда: `docker compose up -d --build`
+6. Выполнить базовые HTTP-проверки
+Команды:
+* `curl -i http://127.0.0.1:8080/`
+* `curl -i http://127.0.0.1:8080/healthz`
 
-### Примечание
-Этот drill дополняет drill про `/healthz`:
+Ожидаемый результат:
 
-* Drill 1 проверяет “контракт здоровья” (health endpoint и healthcheck).
+* конфигурация проходит проверку без ошибок
+* сервис успешно запускается и отвечает ожидаемым образом
 
-* Drill 2 проверяет “валидность конфигурации” (nginx -t) и должен падать быстрее, чем ожидание healthy.
+## Drill 5. После изменения сервис запущен, но результат не соответствует ожиданиям
 
+Сценарий:
 
-## Как применять изменения (nginx + compose): что запускать в какой ситуации
+* контейнер находится в состоянии `Up`
+* конфигурация формально валидна
+* HTTP-ответы или поведение сервиса не соответствуют ожидаемому результату
 
-### Если изменился только nginx-конфиг (conf.d), который примонтирован volume’ом
+Цель:
 
-* Проверить конфиг: `docker compose exec -T nginx nginx -t`
+* отработать post-change validation
+* закрепить проверку не только статуса контейнера, но и фактического поведения сервиса
 
-* Применить без пересоздания контейнера: `docker compose exec -T nginx nginx -s reload`
+Шаги:
 
-### Если нужно просто перезапустить контейнер (без пересборки образа)
+1. Проверить основной endpoint `/`
+Команда: `curl -i http://127.0.0.1:8080/`
+2. Проверить health endpoint `/healthz`
+Команда: `curl -i http://127.0.0.1:8080/healthz`
+3. Проверить состояние контейнера
+Команда: `docker compose ps`
+4. Проверить логи контейнера
+Команда: `docker compose logs nginx`
+5. Проверить конфигурацию Nginx
+Команда: `docker compose exec nginx nginx -t`
+6. При необходимости повторно пересобрать и запустить сервис
+Команда: `docker compose up -d --build`
 
-* `docker compose restart nginx`
-  Использовать, когда reload не подходит или нужно “с нуля” поднять процесс nginx внутри контейнера.
+Ожидаемый результат:
 
-### Если изменился compose.yaml (ports/env/volumes/healthcheck/restart и т.п.)
+* подтверждено фактическое состояние сервиса после изменения
+* найдено расхождение между ожидаемым и реальным поведением
 
-* `docker compose up -d`
-  Compose приведёт сервис к описанному состоянию; при необходимости контейнер будет пересоздан.
+## Связанные документы
 
-### Если изменился Dockerfile или то, что собирается в образ (build context)
+* `docs/observability.md` — быстрые проверки и первичная диагностика
+* `docs/architecture.md` — текущая архитектура проекта
+* `docs/docker.md` — Docker-заметки по проекту
+* `docs/systemd-healthcheck.md` — внешний health check через `systemd`
 
-* `docker compose up -d --build`
-  Пересобирает образ и поднимет контейнеры на новом image.
+## Примечание
 
-### Cleanup (особенно полезно после экспериментов/CI-логики)
+Этот runbook описывает актуальную Compose-first модель проекта.
 
-* `docker compose down -v` (остановить контейнеры и удалить volumes)
+Архивная версия раннего этапа проекта должна храниться отдельно и не должна использоваться как основной operational document для текущего состояния репозитория.
